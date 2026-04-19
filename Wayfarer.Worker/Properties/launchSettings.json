@@ -1,11 +1,13 @@
 ﻿{
   "$schema": "https://json.schemastore.org/launchsettings.json",
   "profiles": {
-    "Wayfarer.Worker1": {
+    "Wayfarer.Worker": {
       "commandName": "Project",
       "dotnetRunMessages": true,
       "environmentVariables": {
-        "DOTNET_ENVIRONMENT": "Development"
+        "DOTNET_ENVIRONMENT": "Development",
+        "DOTNET_ROOT": "C:\\Program Files (x86)\\dotnet",
+        "DOTNET_ROOT(x86)": "C:\\Program Files (x86)\\dotnet"
       }
     }
   }
