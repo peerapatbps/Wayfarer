@@ -1,5 +1,5 @@
 <Solution>
   <Project Path="Wayfarer.Core/Wayfarer.Core.csproj" />
   <Project Path="Wayfarer.Playwright/Wayfarer.Playwright.csproj" />
-  <Project Path="Wayfarer.Worker1/Wayfarer.Worker.csproj" />
+  <Project Path="Wayfarer.Worker/Wayfarer.Worker.csproj" />
 </Solution>
