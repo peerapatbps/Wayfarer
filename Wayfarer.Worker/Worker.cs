@@ -1,4 +1,5 @@
 using Wayfarer.Core.Interfaces;
+using Wayfarer.Worker.Config;
 
 namespace Wayfarer.Worker;
 
@@ -6,29 +7,30 @@ public sealed class Worker : BackgroundService
 {
     private readonly ILogger<Worker> _logger;
     private readonly IPmCollector _pmCollector;
+    private readonly SqlitePmSnapshotStore _store;
 
-    public Worker(ILogger<Worker> logger, IPmCollector pmCollector)
+    public Worker(
+        ILogger<Worker> logger,
+        IPmCollector pmCollector,
+        SqlitePmSnapshotStore store)
     {
         _logger = logger;
         _pmCollector = pmCollector;
+        _store = store;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Wayfarer Worker started at: {time}", DateTimeOffset.Now);
 
-        var jobs = await _pmCollector.CollectAsync(stoppingToken);
+        var snapshots = await _pmCollector.CollectSnapshotsAsync(stoppingToken);
+        await _store.SaveSnapshotsAsync(snapshots, stoppingToken);
 
-        _logger.LogInformation("Collected {count} PM job(s).", jobs.Count);
+        var indexRows = await _store.LoadIndexRecordsAsync(stoppingToken);
+        var detailPayloads = await _pmCollector.CollectDetailPayloadsAsync(indexRows, stoppingToken);
 
-        foreach (var job in jobs)
-        {
-            _logger.LogInformation(
-                "JobNo={JobNo}, Title={Title}, RawStatus={RawStatus}, NormalizedStatus={NormalizedStatus}",
-                job.JobNo,
-                job.Title,
-                job.RawStatus,
-                job.NormalizedStatus);
-        }
+        await _store.SaveDetailPayloadsAsync(detailPayloads, stoppingToken);
+
+        _logger.LogInformation("Wayfarer Worker finished.");
     }
 }
