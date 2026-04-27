@@ -19,7 +19,7 @@ public sealed class PlaywrightPmCollector : IPmCollector, IAsyncDisposable
     private const string TokenEndpointPath = "/sso/realms/webpm/protocol/openid-connect/token";
     private const string WoApiBaseUrl = "https://webpm2.mwa.co.th/api/api/wo";
     private const int PageSize = 1000;
-    private const int SnapshotLookbackDays = 7;
+    private const int SnapshotLookbackDays = 365;
 
     private readonly ILogger<PlaywrightPmCollector> _logger;
     private readonly PmSiteOptions _options;
