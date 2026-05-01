@@ -65,15 +65,20 @@ public sealed class PlaywrightPmCollector : IPmCollector, IAsyncDisposable
         if (_page is null || _context is null)
             throw new InvalidOperationException("Browser session is not ready.");
 
-        foreach (var snapshot in snapshots)
+        for (var index = 0; index < snapshots.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var snapshot = snapshots[index];
 
             var detailUrl = string.IsNullOrWhiteSpace(snapshot.DetailUrl)
                 ? $"https://webpm2.mwa.co.th/app/work-order/{snapshot.WoNo}"
                 : snapshot.DetailUrl;
 
-            _logger.LogInformation("Opening detail page: {Url}", detailUrl);
+            _logger.LogInformation(
+                "Opening detail page {Current}/{Total}: {Url}",
+                index + 1,
+                snapshots.Count,
+                detailUrl);
 
             var accessToken = await NavigateAndCaptureAccessTokenAsync(_page, detailUrl, cancellationToken);
             var cookieHeader = await BuildCookieHeaderAsync(_context);
@@ -88,7 +93,9 @@ public sealed class PlaywrightPmCollector : IPmCollector, IAsyncDisposable
             payloads.Add(payload);
 
             _logger.LogInformation(
-                "DETAIL PAYLOAD captured => woNo={WoNo}, detailUrl={DetailUrl}, fetchedAtUtc={FetchedAtUtc}",
+                "DETAIL PAYLOAD captured {Current}/{Total} => woNo={WoNo}, detailUrl={DetailUrl}, fetchedAtUtc={FetchedAtUtc}",
+                index + 1,
+                snapshots.Count,
                 payload.WoNo,
                 payload.DetailUrl,
                 payload.FetchedAtUtc);

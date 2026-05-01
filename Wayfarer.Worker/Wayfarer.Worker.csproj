@@ -7,6 +7,7 @@
     <AssemblyName>Wayfarer.Worker</AssemblyName>
     <RootNamespace>Wayfarer.Worker</RootNamespace>
     <UserSecretsId>dotnet-Wayfarer.Worker-fd400606-7b2c-4a8f-8ad0-7277c90f5fc4</UserSecretsId>
+    <ApplicationIcon>..\Wayfarer.Core\wayfarer.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
