@@ -19,7 +19,7 @@ public sealed class PlaywrightPmCollector : IPmCollector, IAsyncDisposable
     private const string TokenEndpointPath = "/sso/realms/webpm/protocol/openid-connect/token";
     private const string WoApiBaseUrl = "https://webpm2.mwa.co.th/api/api/wo";
     private const int PageSize = 1000;
-    private const int SnapshotLookbackDays = 365;
+    private const int SnapshotLookbackDays = 15;
 
     private readonly ILogger<PlaywrightPmCollector> _logger;
     private readonly PmSiteOptions _options;
@@ -388,7 +388,7 @@ public sealed class PlaywrightPmCollector : IPmCollector, IAsyncDisposable
         });
 
         await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
-        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+        await TryWaitForNetworkIdleAsync(page, "post-login work-order landing page");
 
         _logger.LogInformation("Redirected after login to: {Url}", page.Url);
     }
@@ -409,7 +409,7 @@ public sealed class PlaywrightPmCollector : IPmCollector, IAsyncDisposable
                     Timeout = 60000
                 });
 
-                await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+                await TryWaitForNetworkIdleAsync(page, url);
             },
             r => r.Url.Contains(TokenEndpointPath, StringComparison.OrdinalIgnoreCase)
                  && r.Request.Method.Equals("POST", StringComparison.OrdinalIgnoreCase),
@@ -431,6 +431,24 @@ public sealed class PlaywrightPmCollector : IPmCollector, IAsyncDisposable
 
         _logger.LogInformation("Access token acquired successfully.");
         return tokenPayload.AccessToken;
+    }
+
+    private async Task TryWaitForNetworkIdleAsync(IPage page, string contextLabel)
+    {
+        try
+        {
+            await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new PageWaitForLoadStateOptions
+            {
+                Timeout = 10000
+            });
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "NetworkIdle timeout while loading {ContextLabel}. Continuing because DOM content is already available.",
+                contextLabel);
+        }
     }
 
     private async Task<string> BuildCookieHeaderAsync(IBrowserContext context)
