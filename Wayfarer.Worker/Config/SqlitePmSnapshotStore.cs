@@ -1,6 +1,7 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Wayfarer.Core.Models;
 
@@ -11,11 +12,24 @@ public sealed class SqlitePmSnapshotStore
     private readonly ILogger<SqlitePmSnapshotStore> _logger;
     private readonly string _connectionString;
 
-    public SqlitePmSnapshotStore(ILogger<SqlitePmSnapshotStore> logger)
+    public SqlitePmSnapshotStore(
+        ILogger<SqlitePmSnapshotStore> logger,
+        IConfiguration configuration)
     {
         _logger = logger;
 
-        var dbPath = Path.Combine(AppContext.BaseDirectory, "wayfarer.db");
+        var configuredPath = configuration["WayfarerStore:DbPath"];
+        var dbPath = string.IsNullOrWhiteSpace(configuredPath)
+            ? Path.Combine(AppContext.BaseDirectory, "wayfarer.db")
+            : ResolveDbPath(configuredPath);
+
+        var dbDirectory = Path.GetDirectoryName(dbPath);
+        if (!string.IsNullOrWhiteSpace(dbDirectory))
+        {
+            Directory.CreateDirectory(dbDirectory);
+        }
+
+        _logger.LogInformation("Wayfarer DB path: {DbPath}", dbPath);
 
         _connectionString = new SqliteConnectionStringBuilder
         {
@@ -23,6 +37,14 @@ public sealed class SqlitePmSnapshotStore
             Mode = SqliteOpenMode.ReadWriteCreate,
             Cache = SqliteCacheMode.Shared
         }.ToString();
+    }
+
+    private static string ResolveDbPath(string configuredPath)
+    {
+        if (Path.IsPathRooted(configuredPath))
+            return configuredPath;
+
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, configuredPath));
     }
 
     public async Task SaveSnapshotsAsync(
@@ -40,9 +62,10 @@ public sealed class SqlitePmSnapshotStore
             await EnsureIndexTableAsync(conn, tx, cancellationToken);
             await EnsureDetailTablesAsync(conn, tx, cancellationToken);
 
-            // สำคัญ: ลบ child ก่อน parent
-            await DeleteAllDetailTablesAsync(conn, tx, cancellationToken);
-            await DeleteAllIndexAsync(conn, tx, cancellationToken);
+            // Keep existing detail rows for work orders that are still present in the latest snapshot.
+            // This prevents the UI detail popup from becoming empty between the index refresh
+            // and the detail-payload refresh.
+            await DeleteStaleDetailAndIndexAsync(conn, tx, records, cancellationToken);
 
             await InsertAllIndexAsync(conn, tx, records, cancellationToken);
 
@@ -121,10 +144,11 @@ public sealed class SqlitePmSnapshotStore
         try
         {
             await EnsureDetailTablesAsync(conn, tx, cancellationToken);
-            await DeleteAllDetailTablesAsync(conn, tx, cancellationToken);
 
             foreach (var payload in payloads)
             {
+                await DeleteDetailRowsForWorkOrderAsync(conn, tx, payload.WoNo, cancellationToken);
+
                 using var doc = JsonDocument.Parse(payload.Json);
                 var data = doc.RootElement.GetProperty("data");
 
@@ -471,6 +495,95 @@ public sealed class SqlitePmSnapshotStore
         }
     }
 
+
+    private static async Task DeleteStaleDetailAndIndexAsync(
+        SqliteConnection conn,
+        SqliteTransaction tx,
+        IReadOnlyList<PmWoRecord> records,
+        CancellationToken cancellationToken)
+    {
+        if (records.Count == 0)
+        {
+            await DeleteAllDetailTablesAsync(conn, tx, cancellationToken);
+            await DeleteAllIndexAsync(conn, tx, cancellationToken);
+            return;
+        }
+
+        await using (var createCmd = conn.CreateCommand())
+        {
+            createCmd.Transaction = tx;
+            createCmd.CommandText = "CREATE TEMP TABLE IF NOT EXISTS temp_latest_wo_no (wo_no INTEGER PRIMARY KEY);";
+            await createCmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var clearCmd = conn.CreateCommand())
+        {
+            clearCmd.Transaction = tx;
+            clearCmd.CommandText = "DELETE FROM temp_latest_wo_no;";
+            await clearCmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        foreach (var record in records)
+        {
+            await using var insertCmd = conn.CreateCommand();
+            insertCmd.Transaction = tx;
+            insertCmd.CommandText = "INSERT OR IGNORE INTO temp_latest_wo_no (wo_no) VALUES ($wo_no);";
+            insertCmd.Parameters.AddWithValue("$wo_no", record.WoNo);
+            await insertCmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var deletes = new[]
+        {
+            "DELETE FROM pm_wo_overview WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_schedule_status WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_people_departments WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_damage_failure WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_history WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_task WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_actual_manhrs WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_meta_flags WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_flowtype WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);",
+            "DELETE FROM pm_wo_index WHERE wo_no NOT IN (SELECT wo_no FROM temp_latest_wo_no);"
+        };
+
+        foreach (var sql in deletes)
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = sql;
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    private static async Task DeleteDetailRowsForWorkOrderAsync(
+        SqliteConnection conn,
+        SqliteTransaction tx,
+        int woNo,
+        CancellationToken cancellationToken)
+    {
+        var deletes = new[]
+        {
+            "DELETE FROM pm_wo_overview WHERE wo_no = $wo_no;",
+            "DELETE FROM pm_wo_schedule_status WHERE wo_no = $wo_no;",
+            "DELETE FROM pm_wo_people_departments WHERE wo_no = $wo_no;",
+            "DELETE FROM pm_wo_damage_failure WHERE wo_no = $wo_no;",
+            "DELETE FROM pm_wo_history WHERE wo_no = $wo_no;",
+            "DELETE FROM pm_wo_task WHERE wo_no = $wo_no;",
+            "DELETE FROM pm_wo_actual_manhrs WHERE wo_no = $wo_no;",
+            "DELETE FROM pm_wo_meta_flags WHERE wo_no = $wo_no;",
+            "DELETE FROM pm_wo_flowtype WHERE wo_no = $wo_no;"
+        };
+
+        foreach (var sql in deletes)
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = sql;
+            cmd.Parameters.AddWithValue("$wo_no", woNo);
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
     private static async Task InsertAllIndexAsync(
         SqliteConnection conn,
         SqliteTransaction tx,
@@ -478,7 +591,7 @@ public sealed class SqlitePmSnapshotStore
         CancellationToken cancellationToken)
     {
         const string sql = """
-        INSERT INTO pm_wo_index (
+        INSERT OR REPLACE INTO pm_wo_index (
             wo_no, detail_url, wo_code, wo_date, wo_problem,
             wo_status_no, wo_status_code, wo_type_code,
             eq_no, pu_no, dept_code, fetched_at_utc
